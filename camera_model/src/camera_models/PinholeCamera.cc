@@ -453,7 +453,13 @@ PinholeCamera::liftProjective(const Eigen::Vector2d& p, Eigen::Vector3d& P) cons
     double rho2_d, rho4_d, radDist_d, Dx_d, Dy_d, inv_denom_d;
     //double lambda;
 
+    /// 输入的点p是经过畸变的归一化平面点经过相机模型产生的像素点
+    /// 这里进行去畸变处理
+
+    ///1.这里首先使用相机模型，得到带畸变的归一化平面点
     // Lift points to normalised plane
+    // 利用相机模型，把像素点恢复到归一化平面点
+    // 得到带畸变的归一化平面点
     mx_d = m_inv_K11 * p(0) + m_inv_K13;
     my_d = m_inv_K22 * p(1) + m_inv_K23;
 
@@ -488,6 +494,8 @@ PinholeCamera::liftProjective(const Eigen::Vector2d& p, Eigen::Vector3d& P) cons
         }
         else
         {
+            ///2.按道理，这里应该是对畸变的归一化平面点进行去畸变
+            /// ????未解决
             // Recursive distortion model
             int n = 8;
             Eigen::Vector2d d_u;
@@ -505,6 +513,7 @@ PinholeCamera::liftProjective(const Eigen::Vector2d& p, Eigen::Vector3d& P) cons
         }
     }
 
+    // 返回去畸变之后的归一化平面点
     // Obtain a projective ray
     P << mx_u, my_u, 1.0;
 }
@@ -638,6 +647,7 @@ PinholeCamera::undistToPlane(const Eigen::Vector2d& p_u, Eigen::Vector2d& p) con
 
 /**
  * \brief Apply distortion to input point (from the normalised plane)
+ * 对归一化平面上的点，+上畸变模型
  *
  * \param p_u undistorted coordinates of point on the normalised plane
  * \return to obtain the distorted point: p_d = p_u + d_u

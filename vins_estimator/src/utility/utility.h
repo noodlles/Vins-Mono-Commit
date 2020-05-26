@@ -12,6 +12,7 @@
 class Utility
 {
   public:
+    /// 四元数更新（输入轴角变化量，输出更新四元数 delta值）
     template <typename Derived>
     static Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)
     {
@@ -67,6 +68,7 @@ class Utility
         return ans;
     }
 
+    // 旋转矩阵转欧拉角(还没看是什么顺序的欧拉角)
     static Eigen::Vector3d R2ypr(const Eigen::Matrix3d &R)
     {
         Eigen::Vector3d n = R.col(0);

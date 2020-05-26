@@ -20,6 +20,7 @@ CameraPoseVisualization keyframebasevisual(0.0, 0.0, 1.0, 1.0);
 static double sum_of_path = 0;
 static Vector3d last_path(0.0, 0.0, 0.0);
 
+// 注册消息发布器
 void registerPub(ros::NodeHandle &n)
 {
     pub_latest_odometry = n.advertise<nav_msgs::Odometry>("imu_propagate", 1000);
@@ -42,10 +43,12 @@ void registerPub(ros::NodeHandle &n)
     keyframebasevisual.setLineWidth(0.01);
 }
 
+// 根据IMU predict()出来的状态，作为里程计数据？
 void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, const std_msgs::Header &header)
 {
     Eigen::Quaterniond quadrotor_Q = Q ;
 
+    // 相对于世界坐标系的PVQ
     nav_msgs::Odometry odometry;
     odometry.header = header;
     odometry.header.frame_id = "world";
@@ -372,9 +375,11 @@ void pubKeyframe(const Estimator &estimator)
 
         sensor_msgs::PointCloud point_cloud;
         point_cloud.header = estimator.Headers[WINDOW_SIZE - 2];
+        // 遍历滑动窗口特征点
         for (auto &it_per_id : estimator.f_manager.feature)
         {
             int frame_size = it_per_id.feature_per_frame.size();
+            // 发布最近两帧的特征点
             if(it_per_id.start_frame < WINDOW_SIZE - 2 && it_per_id.start_frame + frame_size - 1 >= WINDOW_SIZE - 2 && it_per_id.solve_flag == 1)
             {
 
@@ -388,6 +393,7 @@ void pubKeyframe(const Estimator &estimator)
                 p.z = w_pts_i(2);
                 point_cloud.points.push_back(p);
 
+                // 这里的数据都是第[WINDOW_SIZE - 2]帧图像上的
                 int imu_j = WINDOW_SIZE - 2 - it_per_id.start_frame;
                 sensor_msgs::ChannelFloat32 p_2d;
                 p_2d.values.push_back(it_per_id.feature_per_frame[imu_j].point.x());
@@ -403,6 +409,7 @@ void pubKeyframe(const Estimator &estimator)
     }
 }
 
+//发布重定位帧的位姿信息
 void pubRelocalization(const Estimator &estimator)
 {
     nav_msgs::Odometry odometry;

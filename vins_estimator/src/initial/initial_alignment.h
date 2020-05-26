@@ -10,6 +10,11 @@
 using namespace Eigen;
 using namespace std;
 
+/**
+* @class ImageFrame 图像帧
+* @Description  图像帧类可由图像帧的特征点与时间戳构造，
+*               此外还保存了位姿Rt，预积分对象pre_integration，是否是关键帧。
+*/
 class ImageFrame
 {
     public:
@@ -20,8 +25,8 @@ class ImageFrame
         };
         map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>> > > points;
         double t;
-        Matrix3d R;
-        Vector3d T;
+        Matrix3d R;         // 图像帧 [IMU坐标系] 到 参考帧C0 相机坐标系的变换
+        Vector3d T;         // 图像帧 [相机坐标系] 到 参考帧C0 相机坐标系的平移 (认为IMU和相机平移为0?)
         IntegrationBase *pre_integration;
         bool is_key_frame;
 };

@@ -12,35 +12,41 @@ using namespace Eigen;
 using namespace std;
 
 
-
 struct SFMFeature
 {
-    bool state;
-    int id;
-    vector<pair<int,Vector2d>> observation;
-    double position[3];
-    double depth;
+    bool state;                             // 特征点的状态（是否被三角化）
+    int id;                                 // 特征点ID
+    vector<pair<int,Vector2d>> observation; // 所有观测到该特征点的图像帧ID和归一化平面坐标
+    double position[3];                     // 三角化得到的: 3d坐标 [参考坐标系下的]
+    double depth;                           // 深度
 };
 
+// 初始化中的Global SFm  ， 视觉重投影因子
 struct ReprojectionError3D
 {
 	ReprojectionError3D(double observed_u, double observed_v)
 		:observed_u(observed_u), observed_v(observed_v)
 		{}
 
+    // 计算残差，这里的operator()(参数顺序)与外面调用构造的顺序要一一对应
+    // (从参考帧坐标系到 这一帧坐标系的旋转变换， 平移变换， 路标点(3D)坐标， 残差)
 	template <typename T>
 	bool operator()(const T* const camera_R, const T* const camera_T, const T* point, T* residuals) const
 	{
+        // 根据待优化变量:[该帧位姿] ， 将路标点投影到该帧的归一化平面上
 		T p[3];
 		ceres::QuaternionRotatePoint(camera_R, point, p);
 		p[0] += camera_T[0]; p[1] += camera_T[1]; p[2] += camera_T[2];
 		T xp = p[0] / p[2];
     	T yp = p[1] / p[2];
+        // 与该帧的观测做差，得到残差
     	residuals[0] = xp - T(observed_u);
     	residuals[1] = yp - T(observed_v);
     	return true;
 	}
 
+    // 构造ceres自动求导的 cost func
+    // <误差项维度，旋转量维度，平移量维度，特征点(3D)点维度>
 	static ceres::CostFunction* Create(const double observed_x,
 	                                   const double observed_y) 
 	{
@@ -49,6 +55,7 @@ struct ReprojectionError3D
 	          	new ReprojectionError3D(observed_x,observed_y)));
 	}
 
+    // 特征点在被观测到的帧上的归一化平面坐标
 	double observed_u;
 	double observed_v;
 };

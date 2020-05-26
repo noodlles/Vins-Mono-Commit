@@ -19,7 +19,10 @@ using namespace Eigen;
 using namespace std;
 using namespace DVision;
 
-
+/**
+* @class BriefExtractor
+* @Description 通过Brief模板文件，对图像的关键点计算Brief描述子
+*/
 class BriefExtractor
 {
 public:
@@ -29,6 +32,10 @@ public:
   DVision::BRIEF m_brief;
 };
 
+/**
+* @class KeyFrame
+* @Description 构建关键帧，通过BRIEF描述子匹配关键帧和回环候选帧
+*/
 class KeyFrame
 {
 public:
@@ -74,31 +81,37 @@ public:
 
 
 
-	double time_stamp; 
-	int index;
+    double time_stamp;              // 该帧位姿的时间戳
+    int index;                      // 该keyFrame的ID， 只会一直加
 	int local_index;
-	Eigen::Vector3d vio_T_w_i; 
-	Eigen::Matrix3d vio_R_w_i; 
-	Eigen::Vector3d T_w_i;
-	Eigen::Matrix3d R_w_i;
-	Eigen::Vector3d origin_vio_T;		
-	Eigen::Matrix3d origin_vio_R;
-	cv::Mat image;
-	cv::Mat thumbnail;
-	vector<cv::Point3f> point_3d; 
+    /// 下面4个变量会根据回环检测进行更新矫正
+    Eigen::Vector3d vio_T_w_i;      // 当前estimator节点得到的: 该帧 IMU坐标系 到 世界坐标系的平移
+    Eigen::Matrix3d vio_R_w_i;      // 当前estimator节点得到的: 该帧 IMU坐标系 到 世界坐标系的旋转
+    Eigen::Vector3d T_w_i;          // pose_graph优化的: 该帧 IMU坐标系 到 世界坐标系的平移
+    Eigen::Matrix3d R_w_i;          // pose_graph优化的: 该帧 IMU坐标系 到 世界坐标系的旋转
+    /// 下面2个不会变化
+    Eigen::Vector3d origin_vio_T;   // 该帧时刻下的: estimator节点得到的: 该帧 IMU坐标系 到 世界坐标系的平移
+    Eigen::Matrix3d origin_vio_R;   // 该帧时刻下的: estimator节点得到的: 该帧 IMU坐标系 到 世界坐标系的旋转
+
+    cv::Mat image;                  // 该帧图像的 .clone()拷贝
+    cv::Mat thumbnail;              // 该帧图像resize cv::Size(80, 60)
+    vector<cv::Point3f> point_3d;   // 最近两帧的特征点 世界坐标
 	vector<cv::Point2f> point_2d_uv;
 	vector<cv::Point2f> point_2d_norm;
-	vector<double> point_id;
-	vector<cv::KeyPoint> keypoints;
-	vector<cv::KeyPoint> keypoints_norm;
-	vector<cv::KeyPoint> window_keypoints;
-	vector<BRIEF::bitset> brief_descriptors;
-	vector<BRIEF::bitset> window_brief_descriptors;
+    vector<double> point_id;                // 最近两帧的特征点  id
+    vector<cv::KeyPoint> keypoints;         // 新检测的keypoint (fast或者角点)
+    vector<cv::KeyPoint> keypoints_norm;    // 新检测的keypoint的归一化平面点
+    vector<cv::KeyPoint> window_keypoints;  // 滑动窗口特征点对应的keypoint
+    vector<BRIEF::bitset> brief_descriptors;// 新检测的keypoint的描述子
+    vector<BRIEF::bitset> window_brief_descriptors; // 滑动窗口特征点对应的描述子
 	bool has_fast_point;
 	int sequence;
 
 	bool has_loop;
 	int loop_index;
-	Eigen::Matrix<double, 8, 1 > loop_info;
+    Eigen::Matrix<double, 8, 1 > loop_info;
+    /// [0~2] :当前帧 IMU坐标系 到 闭环帧 IMU坐标系 的平移（在闭环帧IMU坐标系的表示）
+    /// [3~6] :当前帧 IMU坐标系 到 闭环帧 IMU坐标系 的旋转
+    /// [7]   :当前帧 IMU坐标系 到 闭环帧 IMU坐标系 的yaw角旋转
 };
 

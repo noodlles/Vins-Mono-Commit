@@ -1,6 +1,8 @@
 #include "keyframe.h"
 
 template <typename Derived>
+
+//剔除status为0的点
 static void reduceVector(vector<Derived> &v, vector<uchar> status)
 {
     int j = 0;
@@ -11,6 +13,7 @@ static void reduceVector(vector<Derived> &v, vector<uchar> status)
 }
 
 // create keyframe online
+// 在线构建新关键帧
 KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, cv::Mat &_image,
 		           vector<cv::Point3f> &_point_3d, vector<cv::Point2f> &_point_2d_uv, vector<cv::Point2f> &_point_2d_norm,
 		           vector<double> &_point_id, int _sequence)
@@ -34,13 +37,16 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 	has_fast_point = false;
 	loop_info << 0, 0, 0, 0, 0, 0, 0, 0;
 	sequence = _sequence;
+    // 计算来自滑动窗口，最近两帧的特征点的描述子
 	computeWindowBRIEFPoint();
+    // 额外检测新特征点并计算所有特征点的描述子，为了回环检测
 	computeBRIEFPoint();
 	if(!DEBUG_IMAGE)
 		image.release();
 }
 
 // load previous keyframe
+//载入先前关键帧
 KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
 					cv::Mat &_image, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
 					vector<cv::KeyPoint> &_keypoints, vector<cv::KeyPoint> &_keypoints_norm, vector<BRIEF::bitset> &_brief_descriptors)
@@ -72,9 +78,11 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 }
 
 
+// 计算来自滑动窗口，最近两帧的特征点的描述子
 void KeyFrame::computeWindowBRIEFPoint()
 {
 	BriefExtractor extractor(BRIEF_PATTERN_FILE.c_str());
+    // 遍历滑动窗口中的特征点
 	for(int i = 0; i < (int)point_2d_uv.size(); i++)
 	{
 	    cv::KeyPoint key;
@@ -84,15 +92,26 @@ void KeyFrame::computeWindowBRIEFPoint()
 	extractor(image, window_keypoints, window_brief_descriptors);
 }
 
+// 额外检测新特征点并计算所有特征点的描述子，为了回环检测
 void KeyFrame::computeBRIEFPoint()
 {
 	BriefExtractor extractor(BRIEF_PATTERN_FILE.c_str());
 	const int fast_th = 20; // corner detector response threshold
 	if(1)
+		/*
+		 *void cv::FAST	(
+		 *	InputArray 	image,						关键点所在的灰度图像。
+		 *	std::vector< KeyPoint > & 	keypoints,	在图像上检测到关键点
+		 *	int 	threshold,						中心像素的强度与该像素周围圆的像素之间的差异的阈值
+		 *	bool 	nonmaxSuppression = true 		是否对检测到的角点（关键点）应用非最大抑制
+		 *)
+		*/
 		cv::FAST(image, keypoints, fast_th, true);
 	else
 	{
 		vector<cv::Point2f> tmp_pts;
+        // 检测500个新的特征点并将其放入keypoints
+        // 提取角点
 		cv::goodFeaturesToTrack(image, tmp_pts, 500, 0.01, 10);
 		for(int i = 0; i < (int)tmp_pts.size(); i++)
 		{
@@ -101,7 +120,11 @@ void KeyFrame::computeBRIEFPoint()
 		    keypoints.push_back(key);
 		}
 	}
+
+	//计算keypoints中所有特征点的描述子
 	extractor(image, keypoints, brief_descriptors);
+
+	//将特征点去畸变矫正
 	for (int i = 0; i < (int)keypoints.size(); i++)
 	{
 		Eigen::Vector3d tmp_p;
@@ -112,12 +135,23 @@ void KeyFrame::computeBRIEFPoint()
 	}
 }
 
+// 重载运算符() : 计算Brief描述子
 void BriefExtractor::operator() (const cv::Mat &im, vector<cv::KeyPoint> &keys, vector<BRIEF::bitset> &descriptors) const
 {
   m_brief.compute(im, keys, descriptors);
 }
 
-
+/**
+ * @brief KeyFrame::searchInAera
+ *        关键帧中某个特征点的描述子与回环帧的所有描述子匹配
+ * @param window_descriptor     [输入] 滑动窗口中，当前帧的描述子
+ * @param descriptors_old       [输入] 闭环帧的描述子容器
+ * @param keypoints_old         [输入] 闭环帧的特征点像素坐标容器
+ * @param keypoints_old_norm    [输入] 闭环帧的归一化平面点容器
+ * @param best_match            [输出] 与输入的当前帧描述子 最佳匹配的 闭环帧像素坐标点
+ * @param best_match_norm       [输出] 与输入的当前帧描述子 最佳匹配点的 闭环帧归一化平面点
+ * @return
+ */
 bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
                             const std::vector<BRIEF::bitset> &descriptors_old,
                             const std::vector<cv::KeyPoint> &keypoints_old,
@@ -128,6 +162,7 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
     cv::Point2f best_pt;
     int bestDist = 128;
     int bestIndex = -1;
+
     for(int i = 0; i < (int)descriptors_old.size(); i++)
     {
 
@@ -138,7 +173,8 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
             bestIndex = i;
         }
     }
-    //printf("best dist %d", bestDist);
+    // printf("best dist %d", bestDist);
+    // 找到汉明距离小于80的最小值和索引即为该特征点的最佳匹配
     if (bestIndex != -1 && bestDist < 80)
     {
       best_match = keypoints_old[bestIndex].pt;
@@ -149,6 +185,16 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
       return false;
 }
 
+/**
+ * @brief   将关键帧与回环帧进行BRIEF描述子匹配
+ * @param[out]  matched_2d_old  	回环帧匹配后的二维坐标
+ * @param[out]  matched_2d_old_norm 回环帧匹配后的二维归一化坐标
+ * @param[out]  status				匹配状态，成功为1
+ * @param[in]   descriptors_old		回环帧的描述子
+ * @param[in] 	keypoints_old 		回环帧的二维坐标
+ * @param[in] 	keypoints_old_norm	回环帧的二维归一化坐标
+ * @return      void
+*/
 void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
 								std::vector<cv::Point2f> &matched_2d_old_norm,
                                 std::vector<uchar> &status,
@@ -156,21 +202,28 @@ void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
                                 const std::vector<cv::KeyPoint> &keypoints_old,
                                 const std::vector<cv::KeyPoint> &keypoints_old_norm)
 {
+    // 遍历滑动窗口中，当前帧的描述子
     for(int i = 0; i < (int)window_brief_descriptors.size(); i++)
     {
         cv::Point2f pt(0.f, 0.f);
         cv::Point2f pt_norm(0.f, 0.f);
-        if (searchInAera(window_brief_descriptors[i], descriptors_old, keypoints_old, keypoints_old_norm, pt, pt_norm))
+        if (searchInAera(window_brief_descriptors[i],   // [输入] 滑动窗口中，当前帧的描述子
+                         descriptors_old,               // [输入] 闭环帧的描述子容器
+                         keypoints_old,                 // [输入] 闭环帧的特征点像素坐标容器
+                         keypoints_old_norm,            // [输入] 闭环帧的归一化平面点容器
+                         pt,                            // [输出] 与输入的当前帧描述子 最佳匹配的 闭环帧像素坐标点
+                         pt_norm))                      // [输出] 与输入的当前帧描述子 最佳匹配点的 闭环帧归一化平面点
           status.push_back(1);
         else
           status.push_back(0);
+
         matched_2d_old.push_back(pt);
         matched_2d_old_norm.push_back(pt_norm);
     }
 
 }
 
-
+//通过RANSAC的基本矩阵检验去除匹配异常的点
 void KeyFrame::FundmantalMatrixRANSAC(const std::vector<cv::Point2f> &matched_2d_cur_norm,
                                       const std::vector<cv::Point2f> &matched_2d_old_norm,
                                       vector<uchar> &status)
@@ -197,6 +250,14 @@ void KeyFrame::FundmantalMatrixRANSAC(const std::vector<cv::Point2f> &matched_2d
     }
 }
 
+/**
+ * @brief KeyFrame::PnPRANSAC 通过RANSAC的PNP检验去除匹配异常的点
+ * @param matched_2d_old_norm   [输入]
+ * @param matched_3d            [输入]
+ * @param status                [输出]
+ * @param PnP_T_old             [输出]
+ * @param PnP_R_old             [输出]
+ */
 void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
                          const std::vector<cv::Point3f> &matched_3d,
                          std::vector<uchar> &status,
@@ -209,9 +270,11 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
     cv::Mat K = (cv::Mat_<double>(3, 3) << 1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0);
     Matrix3d R_inital;
     Vector3d P_inital;
+    // 当前帧相机坐标系 到 世界坐标系 的变换
     Matrix3d R_w_c = origin_vio_R * qic;
     Vector3d T_w_c = origin_vio_T + origin_vio_R * tic;
 
+    // 世界坐标系 到 当前帧相机坐标系 的变换
     R_inital = R_w_c.inverse();
     P_inital = -(R_inital * T_w_c);
 
@@ -236,6 +299,7 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
     for (int i = 0; i < (int)matched_2d_old_norm.size(); i++)
         status.push_back(0);
 
+    // 根据ransac的Pnp求解，设置内点状态
     for( int i = 0; i < inliers.rows; i++)
     {
         int n = inliers.at<int>(i);
@@ -250,14 +314,16 @@ void KeyFrame::PnPRANSAC(const vector<cv::Point2f> &matched_2d_old_norm,
     cv::cv2eigen(t, T_pnp);
     T_w_c_old = R_w_c_old * (-T_pnp);
 
+    // [输出] ： PnP的结果:  闭环帧IMU坐标系 到 世界坐标系 的变换 (即闭环帧的位姿)
     PnP_R_old = R_w_c_old * qic.transpose();
     PnP_T_old = T_w_c_old - PnP_R_old * tic;
 
 }
 
-
+// 寻找并建立关键帧与回环帧之间的匹配关系
 bool KeyFrame::findConnection(KeyFrame* old_kf)
 {
+    /// old_kf： 检测到的回环关键帧
 	TicToc tmp_t;
 	//printf("find Connection\n");
 	vector<cv::Point2f> matched_2d_cur, matched_2d_old;
@@ -266,9 +332,13 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	vector<double> matched_id;
 	vector<uchar> status;
 
+    // 当前帧的特征点(世界坐标系)坐标
 	matched_3d = point_3d;
+    // 当前帧的特征点像素坐标
 	matched_2d_cur = point_2d_uv;
+    // 归一化平面坐标
 	matched_2d_cur_norm = point_2d_norm;
+    // 特征点ID序列
 	matched_id = point_id;
 
 	TicToc t_match;
@@ -298,7 +368,14 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	    }
 	#endif
 	//printf("search by des\n");
-	searchByBRIEFDes(matched_2d_old, matched_2d_old_norm, status, old_kf->brief_descriptors, old_kf->keypoints, old_kf->keypoints_norm);
+	//关键帧与回环帧进行BRIEF描述子匹配，剔除匹配失败的点
+    searchByBRIEFDes(matched_2d_old,                //[输出] 当前帧与回环帧匹配后的二维坐标容器
+                     matched_2d_old_norm,           //[输出] 当前帧与回环帧匹配后的归一化平面坐标容器
+                     status,                        //[输出] 匹配状态容器
+                     old_kf->brief_descriptors,
+                     old_kf->keypoints,
+                     old_kf->keypoints_norm);
+    // 根据匹配状态，筛选有效匹配
 	reduceVector(matched_2d_cur, status);
 	reduceVector(matched_2d_old, status);
 	reduceVector(matched_2d_cur_norm, status);
@@ -398,21 +475,29 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	        cv::imwrite( path.str().c_str(), loop_match_img);
 	    }
 	#endif
+
+    // 闭环帧IMU坐标系 到 世界坐标系 的变换 (即闭环帧的位姿) [这是根据当前的滑动窗口得到的]
 	Eigen::Vector3d PnP_T_old;
 	Eigen::Matrix3d PnP_R_old;
 	Eigen::Vector3d relative_t;
 	Quaterniond relative_q;
 	double relative_yaw;
+
+    // 若达到最小回环匹配点数
 	if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
 	{
+		//RANSAC PnP检测去除误匹配的点
 		status.clear();
+        // [输出] ： PnP的结果:  闭环帧IMU坐标系 到 世界坐标系 的变换 (即闭环帧的位姿)
 	    PnPRANSAC(matched_2d_old_norm, matched_3d, status, PnP_T_old, PnP_R_old);
+        // 外点剔除
 	    reduceVector(matched_2d_cur, status);
 	    reduceVector(matched_2d_old, status);
 	    reduceVector(matched_2d_cur_norm, status);
 	    reduceVector(matched_2d_old_norm, status);
 	    reduceVector(matched_3d, status);
 	    reduceVector(matched_id, status);
+
 	    #if 1
 	    	if (DEBUG_IMAGE)
 	        {
@@ -420,9 +505,20 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	        	cv::Mat gap_image(ROW, gap, CV_8UC1, cv::Scalar(255, 255, 255));
 	            cv::Mat gray_img, loop_match_img;
 	            cv::Mat old_img = old_kf->image;
+	            /*void cv::hconcat	(	水平串联两个图像
+	             *	InputArray 	src1,	第一个输入矩阵
+				 *	InputArray 	src2,	第二个输入矩阵
+				 *	OutputArray dst 	输出矩阵，行数与前两个矩阵相同，列数为他们的总和
+				 *	)
+	            */
+	            //这里将image、gap_image、old_img水平拼接起来成为gray_img
 	            cv::hconcat(image, gap_image, gap_image);
 	            cv::hconcat(gap_image, old_img, gray_img);
+
+	            //灰度图gray_img转换成RGB图loop_match_img
 	            cvtColor(gray_img, loop_match_img, CV_GRAY2RGB);
+
+	            //在图片loop_match_img上标注出匹配点和之间的连线
 	            for(int i = 0; i< (int)matched_2d_cur.size(); i++)
 	            {
 	                cv::Point2f cur_pt = matched_2d_cur[i];
@@ -440,9 +536,10 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	                old_pt.x += (COL + gap) ;
 	                cv::line(loop_match_img, matched_2d_cur[i], old_pt, cv::Scalar(0, 255, 0), 2, 8, 0);
 	            }
+
+	            //在loop_match_img下面垂直拼接一个notation，写上当前帧和先前帧的索引值和序列号
 	            cv::Mat notation(50, COL + gap + COL, CV_8UC3, cv::Scalar(255, 255, 255));
 	            putText(notation, "current frame: " + to_string(index) + "  sequence: " + to_string(sequence), cv::Point2f(20, 30), CV_FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255), 3);
-
 	            putText(notation, "previous frame: " + to_string(old_kf->index) + "  sequence: " + to_string(old_kf->sequence), cv::Point2f(20 + COL + gap, 30), CV_FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255), 3);
 	            cv::vconcat(notation, loop_match_img, loop_match_img);
 
@@ -453,6 +550,7 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	                    << old_kf->index << "-" << "3pnp_match.jpg";
 	            cv::imwrite( path.str().c_str(), loop_match_img);
 	            */
+	            //若达到最小回环匹配点数，将loop_match_img的宽和高缩小一半并发布为pub_match_img
 	            if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
 	            {
 	            	/*
@@ -469,26 +567,43 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 	    #endif
 	}
 
+    // 若达到最小回环匹配点数
 	if ((int)matched_2d_cur.size() > MIN_LOOP_NUM)
 	{
+        /// 将(当前帧IMU坐标系原点)点从 当前帧IMU坐标系 变换到 闭环帧IMU坐标系的过程
+        /// p_loop = R_{loop<-w}(R_{w<-curr}p_curr+t_{w<-curr})+ t_{loop<-w}
+        ///        = R_{w<-loop}^{T}(R_{w<-curr}p_curr+t_{w<-curr}) - R_{w<-loop}^{T}*t_{loop<-w}
+        ///        = R_{w<-loop}^{T}(t_{w<-curr}) - R_{w<-loop}^{T}*t_{loop<-w}
+        ///        = R_{w<-loop}^{T}(t_{w<-curr}-t_{loop<-w})
+        // origin_vio_T:  当前帧 IMU坐标系 到 世界坐标系的平移 （在世界坐标系的表示）
+        // PnP_T_old :    闭环帧 IMU坐标系 到 世界坐标系的平移 （在世界坐标系的表示）
+        // relative_t:    当前帧 IMU坐标系 到 闭环帧 IMU坐标系 的平移（在闭环帧IMU坐标系的表示）
 	    relative_t = PnP_R_old.transpose() * (origin_vio_T - PnP_T_old);
+        // origin_vio_R: 当前帧 IMU坐标系 到 世界坐标系的旋转
+        // PnP_R_old:    闭环帧 IMU坐标系 到 世界坐标系的旋转
+        // relative_q:   当前帧 IMU坐标系 到 闭环帧 IMU坐标系 的旋转
 	    relative_q = PnP_R_old.transpose() * origin_vio_R;
 	    relative_yaw = Utility::normalizeAngle(Utility::R2ypr(origin_vio_R).x() - Utility::R2ypr(PnP_R_old).x());
 	    //printf("PNP relative\n");
 	    //cout << "pnp relative_t " << relative_t.transpose() << endl;
 	    //cout << "pnp relative_yaw " << relative_yaw << endl;
+
+	    //相对位姿检验
 	    if (abs(relative_yaw) < 30.0 && relative_t.norm() < 20.0)
 	    {
-
+            // 设置回环信息
 	    	has_loop = true;
 	    	loop_index = old_kf->index;
 	    	loop_info << relative_t.x(), relative_t.y(), relative_t.z(),
 	    	             relative_q.w(), relative_q.x(), relative_q.y(), relative_q.z(),
 	    	             relative_yaw;
+
+            // 快速重定位
 	    	if(FAST_RELOCALIZATION)
 	    	{
 			    sensor_msgs::PointCloud msg_match_points;
 			    msg_match_points.header.stamp = ros::Time(time_stamp);
+                // matched_2d_old_norm： 当前帧与回环帧匹配后的归一化平面坐标容器
 			    for (int i = 0; i < (int)matched_2d_old_norm.size(); i++)
 			    {
 		            geometry_msgs::Point32 p;
@@ -497,6 +612,7 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 		            p.z = matched_id[i];
 		            msg_match_points.points.push_back(p);
 			    }
+                // 发布回环帧的 位姿 (IMU坐标系 到 世界坐标系的变换)
 			    Eigen::Vector3d T = old_kf->T_w_i; 
 			    Eigen::Matrix3d R = old_kf->R_w_i;
 			    Quaterniond Q(R);
@@ -520,6 +636,7 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 }
 
 
+//计算两个描述子之间的汉明距离
 int KeyFrame::HammingDis(const BRIEF::bitset &a, const BRIEF::bitset &b)
 {
     BRIEF::bitset xor_of_bitset = a ^ b;
@@ -533,6 +650,7 @@ void KeyFrame::getVioPose(Eigen::Vector3d &_T_w_i, Eigen::Matrix3d &_R_w_i)
     _R_w_i = vio_R_w_i;
 }
 
+// 取经过Pose Graph优化过的位姿
 void KeyFrame::getPose(Eigen::Vector3d &_T_w_i, Eigen::Matrix3d &_R_w_i)
 {
     _T_w_i = T_w_i;
@@ -577,6 +695,8 @@ void KeyFrame::updateLoop(Eigen::Matrix<double, 8, 1 > &_loop_info)
 	}
 }
 
+
+//读取 构建字典时使用的相同的Brief模板文件，构造BriefExtractor
 BriefExtractor::BriefExtractor(const std::string &pattern_file)
 {
   // The DVision::BRIEF extractor computes a random pattern by default when
@@ -585,6 +705,7 @@ BriefExtractor::BriefExtractor(const std::string &pattern_file)
   // the descriptors compatible with the predefined vocabulary
 
   // loads the pattern
+
   cv::FileStorage fs(pattern_file.c_str(), cv::FileStorage::READ);
   if(!fs.isOpened()) throw string("Could not open file ") + pattern_file;
 

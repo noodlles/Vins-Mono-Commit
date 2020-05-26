@@ -8,12 +8,13 @@ InitialEXRotation::InitialEXRotation(){
     ric = Matrix3d::Identity();
 }
 
+//标定外参的旋转矩阵
 bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> corres, Quaterniond delta_q_imu, Matrix3d &calib_ric_result)
 {
     frame_count++;
-    Rc.push_back(solveRelativeR(corres));
-    Rimu.push_back(delta_q_imu.toRotationMatrix());
-    Rc_g.push_back(ric.inverse() * delta_q_imu * ric);
+    Rc.push_back(solveRelativeR(corres));//帧间cam的R，由对极几何得到
+    Rimu.push_back(delta_q_imu.toRotationMatrix());//帧间IMU的R，由IMU预积分得到
+    Rc_g.push_back(ric.inverse() * delta_q_imu * ric);//每帧IMU相对于起始帧IMU的R
 
     Eigen::MatrixXd A(frame_count * 4, 4);
     A.setZero();
@@ -27,10 +28,14 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
         ROS_DEBUG(
             "%d %f", i, angular_distance);
 
+        //huber核函数做加权
         double huber = angular_distance > 5.0 ? 5.0 / angular_distance : 1.0;
         ++sum_ok;
         Matrix4d L, R;
 
+        //R_bk+1^bk * R_c^b = R_c^b * R_ck+1^ck
+        //[Q1(q_bk+1^bk) - Q2(q_ck+1^ck)] * q_c^b = 0
+        //L R 分别为左乘和右乘矩阵
         double w = Quaterniond(Rc[i]).w();
         Vector3d q = Quaterniond(Rc[i]).vec();
         L.block<3, 3>(0, 0) = w * Matrix3d::Identity() + Utility::skewSymmetric(q);
@@ -49,6 +54,7 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
         A.block<4, 4>((i - 1) * 4, 0) = huber * (L - R);
     }
 
+    //svd分解中最小奇异值对应的右奇异向量作为旋转四元数
     JacobiSVD<MatrixXd> svd(A, ComputeFullU | ComputeFullV);
     Matrix<double, 4, 1> x = svd.matrixV().col(3);
     Quaterniond estimated_R(x);
@@ -57,6 +63,8 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
     //cout << ric << endl;
     Vector3d ric_cov;
     ric_cov = svd.singularValues().tail<3>();
+
+    //至少迭代计算了WINDOW_SIZE次，且R的奇异值大于0.25才认为标定成功
     if (frame_count >= WINDOW_SIZE && ric_cov(1) > 0.25)
     {
         calib_ric_result = ric;
@@ -66,6 +74,7 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
         return false;
 }
 
+//根据两帧特征点求解两帧的旋转矩阵
 Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>> &corres)
 {
     if (corres.size() >= 9)
@@ -76,8 +85,12 @@ Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>
             ll.push_back(cv::Point2f(corres[i].first(0), corres[i].first(1)));
             rr.push_back(cv::Point2f(corres[i].second(0), corres[i].second(1)));
         }
+
+        //求解两帧的本质矩阵
         cv::Mat E = cv::findFundamentalMat(ll, rr);
         cv::Mat_<double> R1, R2, t1, t2;
+
+        //本质矩阵svd分解得到4组Rt解
         decomposeE(E, R1, R2, t1, t2);
 
         if (determinant(R1) + 1.0 < 1e-09)
@@ -85,10 +98,13 @@ Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>
             E = -E;
             decomposeE(E, R1, R2, t1, t2);
         }
+
+        //通过三角化得到的正深度选择Rt解
         double ratio1 = max(testTriangulation(ll, rr, R1, t1), testTriangulation(ll, rr, R1, t2));
         double ratio2 = max(testTriangulation(ll, rr, R2, t1), testTriangulation(ll, rr, R2, t2));
         cv::Mat_<double> ans_R_cv = ratio1 > ratio2 ? R1 : R2;
 
+        //对R求转置
         Matrix3d ans_R_eigen;
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++)

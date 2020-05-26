@@ -15,9 +15,15 @@ using namespace Eigen;
 
 #include "parameters.h"
 
+/**
+* @class FeaturePerFrame
+* @brief 特征类
+* detailed
+*/
 class FeaturePerFrame
 {
   public:
+    //_point:[x,y,z,u,v,vx,vy]
     FeaturePerFrame(const Eigen::Matrix<double, 7, 1> &_point, double td)
     {
         point.x() = _point(0);
@@ -30,7 +36,7 @@ class FeaturePerFrame
         cur_td = td;
     }
     double cur_td;
-    Vector3d point;
+    Vector3d point;     // 归一化平面点
     Vector2d uv;
     Vector2d velocity;
     double z;
@@ -41,11 +47,17 @@ class FeaturePerFrame
     double dep_gradient;
 };
 
+/**
+* @class FeaturePerId
+* @brief 某feature_id下的所有FeaturePerFrame
+* detailed
+*/
 class FeaturePerId
 {
   public:
-    const int feature_id;
-    int start_frame;
+    const int feature_id;                       // 特征点id
+    int start_frame;                            // 滑动窗口中，第一次观测到该特征点的帧号
+                                                // 如果第一次观测的帧被marg掉了，那么会找一个继承，继续作为start_frame
     vector<FeaturePerFrame> feature_per_frame;
 
     int used_num;
@@ -56,6 +68,13 @@ class FeaturePerId
 
     Vector3d gt_p;
 
+    /**
+     * @brief FeaturePerId
+     * @brief 以feature_id为索引，并保存了出现该角点的第一帧的id,
+     *        同时设置待估计的逆深度为-1.0
+     * @param _feature_id : 特征点id号
+     * @param _start_frame ： 第一次观测到该特征点的帧号
+     */
     FeaturePerId(int _feature_id, int _start_frame)
         : feature_id(_feature_id), start_frame(_start_frame),
           used_num(0), estimated_depth(-1.0), solve_flag(0)
@@ -90,7 +109,7 @@ class FeatureManager
     void removeBack();
     void removeFront(int frame_count);
     void removeOutlier();
-    list<FeaturePerId> feature;
+    list<FeaturePerId> feature;// 通过FeatureManager可以得到滑动窗口内所有的角点信息
     int last_track_num;
 
   private:

@@ -9,6 +9,7 @@ ProjectionTdFactor::ProjectionTdFactor(const Eigen::Vector3d &_pts_i, const Eige
                                        pts_i(_pts_i), pts_j(_pts_j), 
                                        td_i(_td_i), td_j(_td_j)
 {
+    // 归一化平面点的移动速度
     velocity_i.x() = _velocity_i.x();
     velocity_i.y() = _velocity_i.y();
     velocity_i.z() = 0;
@@ -34,33 +35,49 @@ ProjectionTdFactor::ProjectionTdFactor(const Eigen::Vector3d &_pts_i, const Eige
 bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *residuals, double **jacobians) const
 {
     TicToc tic_toc;
+    // 取待优化变量
+    // 第i帧位姿
     Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
     Eigen::Quaterniond Qi(parameters[0][6], parameters[0][3], parameters[0][4], parameters[0][5]);
 
+    // 第j帧位姿
     Eigen::Vector3d Pj(parameters[1][0], parameters[1][1], parameters[1][2]);
     Eigen::Quaterniond Qj(parameters[1][6], parameters[1][3], parameters[1][4], parameters[1][5]);
 
+    // 相机到IMU的变换
     Eigen::Vector3d tic(parameters[2][0], parameters[2][1], parameters[2][2]);
     Eigen::Quaterniond qic(parameters[2][6], parameters[2][3], parameters[2][4], parameters[2][5]);
 
+    // 特征点在第i帧的逆深度
     double inv_dep_i = parameters[3][0];
 
+    // IMU和相机时间同步误差
     double td = parameters[4][0];
 
     Eigen::Vector3d pts_i_td, pts_j_td;
+    // 速度补偿修正
     pts_i_td = pts_i - (td - td_i + TR / ROW * row_i) * velocity_i;
     pts_j_td = pts_j - (td - td_j + TR / ROW * row_j) * velocity_j;
+    // 特征点在第i帧的相机坐标系的坐标
     Eigen::Vector3d pts_camera_i = pts_i_td / inv_dep_i;
+    // 在第i帧的IMU坐标系坐标
     Eigen::Vector3d pts_imu_i = qic * pts_camera_i + tic;
+    // 根据第i帧位姿(待估计参数)，将第i帧的点投影到世界坐标系
     Eigen::Vector3d pts_w = Qi * pts_imu_i + Pi;
+    // 点投影到 第j帧 IMU坐标系
     Eigen::Vector3d pts_imu_j = Qj.inverse() * (pts_w - Pj);
+    // 投影到 第j帧相机坐标系
     Eigen::Vector3d pts_camera_j = qic.inverse() * (pts_imu_j - tic);
+    // 利用指针初始化 Eigen变量
     Eigen::Map<Eigen::Vector2d> residual(residuals);
 
+    /// 计算残差
 #ifdef UNIT_SPHERE_ERROR 
     residual =  tangent_base * (pts_camera_j.normalized() - pts_j_td.normalized());
 #else
     double dep_j = pts_camera_j.z();
+    // 对投影到第j帧相机坐标系的点进行归一化，到归一化平面
+    // 再算残差
     residual = (pts_camera_j / dep_j).head<2>() - pts_j_td.head<2>();
 #endif
 
@@ -89,6 +106,7 @@ bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *resid
 #endif
         reduce = sqrt_info * reduce;
 
+        // 计算雅克比啦
         if (jacobians[0])
         {
             Eigen::Map<Eigen::Matrix<double, 2, 7, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
@@ -179,6 +197,8 @@ void ProjectionTdFactor::check(double **parameters)
     double td = parameters[4][0];
 
     Eigen::Vector3d pts_i_td, pts_j_td;
+    //pts_i_td 处理时间同步误差和Rolling shutter时间后，角点在归一化平面的坐标。
+    //TR / ROW * row_i就是相机 rolling 到这一行时所用的时间
     pts_i_td = pts_i - (td - td_i + TR / ROW * row_i) * velocity_i;
     pts_j_td = pts_j - (td - td_j + TR / ROW * row_j) * velocity_j;
     Eigen::Vector3d pts_camera_i = pts_i_td / inv_dep_i;

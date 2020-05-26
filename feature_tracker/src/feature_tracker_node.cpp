@@ -18,23 +18,35 @@ queue<sensor_msgs::ImageConstPtr> img_buf;
 ros::Publisher pub_img,pub_match;
 ros::Publisher pub_restart;
 
+//每个相机都有一个FeatureTracker实例，即trackerData[i]
 FeatureTracker trackerData[NUM_OF_CAM];
+
 double first_image_time;
 int pub_count = 1;
 bool first_image_flag = true;
-double last_image_time = 0;
+double last_image_time = 0;//上一帧相机的时间戳
 bool init_pub = 0;
 
+/**
+ * @brief   ROS的回调函数，对新来的图像进行特征点追踪，发布
+ * @Description readImage()函数对新来的图像使用光流法进行特征点跟踪
+ *              追踪的特征点封装成feature_points发布到pub_img的话题下，
+ *              图像封装成ptr发布在pub_match下
+ * @param[in]   img_msg 输入的图像
+ * @return      void
+*/
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
+    //判断是否是第一帧
     if(first_image_flag)
     {
         first_image_flag = false;
-        first_image_time = img_msg->header.stamp.toSec();
+        first_image_time = img_msg->header.stamp.toSec();//记录第一个图像帧的时间
         last_image_time = img_msg->header.stamp.toSec();
         return;
     }
     // detect unstable camera stream
+    // 通过时间间隔判断相机数据流是否稳定，有问题则restart
     if (img_msg->header.stamp.toSec() - last_image_time > 1.0 || img_msg->header.stamp.toSec() < last_image_time)
     {
         ROS_WARN("image discontinue! reset the feature tracker!");
@@ -48,10 +60,14 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     last_image_time = img_msg->header.stamp.toSec();
     // frequency control
+    // 发布频率控制
+    // 并不是每读入一帧图像，就要发布特征点
+    // 判断间隔时间内的发布次数
     if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)
     {
         PUB_THIS_FRAME = true;
         // reset the frequency control
+        // 时间间隔内的发布频率十分接近设定频率时，更新时间间隔起始时刻，并将数据发布次数置0
         if (abs(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time) - FREQ) < 0.01 * FREQ)
         {
             first_image_time = img_msg->header.stamp.toSec();
@@ -62,6 +78,8 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         PUB_THIS_FRAME = false;
 
     cv_bridge::CvImageConstPtr ptr;
+
+    //将图像编码8UC1转换为mono8
     if (img_msg->encoding == "8UC1")
     {
         sensor_msgs::Image img;
@@ -78,16 +96,22 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
 
     cv::Mat show_img = ptr->image;
+
     TicToc t_r;
+
+    /// 开始读取图片，前端跟踪处理
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
         ROS_DEBUG("processing camera %d", i);
-        if (i != 1 || !STEREO_TRACK)
+        if (i != 1 || !STEREO_TRACK)//单目
+            //readImage()函数读取图像数据进行处理
             trackerData[i].readImage(ptr->image.rowRange(ROW * i, ROW * (i + 1)), img_msg->header.stamp.toSec());
-        else
+        else//双目
         {
+            // 双目
             if (EQUALIZE)
             {
+                //自适应直方图均衡化处理
                 cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
                 clahe->apply(ptr->image.rowRange(ROW * i, ROW * (i + 1)), trackerData[i].cur_img);
             }
@@ -100,16 +124,22 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 #endif
     }
 
+    //更新全局ID
     for (unsigned int i = 0;; i++)
     {
         bool completed = false;
+        // 遍历每一个相机
         for (int j = 0; j < NUM_OF_CAM; j++)
+            // 单目
             if (j != 1 || !STEREO_TRACK)
-                completed |= trackerData[j].updateID(i);
+                completed |= trackerData[j].updateID(i);        // 为新添加的特征点(还没有光流跟踪的)设置id
         if (!completed)
             break;
     }
 
+    //1、将特征点id，矫正后归一化平面的3D点(x,y,z=1)，像素2D点(u,v)，像素的速度(vx,vy)，
+    //封装成sensor_msgs::PointCloudPtr类型的feature_points实例中,发布到pub_img;
+    //2、将图像封装到cv_bridge::cvtColor类型的ptr实例中发布到pub_match
    if (PUB_THIS_FRAME)
    {
         pub_count++;
@@ -124,24 +154,37 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         feature_points->header.frame_id = "world";
 
         vector<set<int>> hash_ids(NUM_OF_CAM);
+        // 遍历每一个相机
         for (int i = 0; i < NUM_OF_CAM; i++)
         {
+            // 当前帧去畸变后的归一化平面点
             auto &un_pts = trackerData[i].cur_un_pts;
+            // 当前帧的特征点
             auto &cur_pts = trackerData[i].cur_pts;
+            // 当前帧特征点所对应的ID号容器
             auto &ids = trackerData[i].ids;
+            // 特帧点对应的归一化平面点移动速度
             auto &pts_velocity = trackerData[i].pts_velocity;
+            // 遍历特帧点
             for (unsigned int j = 0; j < ids.size(); j++)
             {
+                // 如果当前这个特帧点被观测（跟踪）次数大于1
                 if (trackerData[i].track_cnt[j] > 1)
                 {
+                    // 取点的id（该相机所对应的唯一的特征点ID）
                     int p_id = ids[j];
                     hash_ids[i].insert(p_id);
+                    // 当前帧去畸变后的归一化平面点
+                    // 打包成ros消息
                     geometry_msgs::Point32 p;
                     p.x = un_pts[j].x;
                     p.y = un_pts[j].y;
                     p.z = 1;
 
+                    // 储存到 sensor_msgs::PointCloudPtr
                     feature_points->points.push_back(p);
+                    ///下面的数据储存到channels
+                    // 储存特帧点的: id, 像素坐标(u,v), 归一化平面点速度(vx,vy)
                     id_of_point.values.push_back(p_id * NUM_OF_CAM + i);
                     u_of_point.values.push_back(cur_pts[j].x);
                     v_of_point.values.push_back(cur_pts[j].y);
@@ -157,15 +200,18 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         feature_points->channels.push_back(velocity_y_of_point);
         ROS_DEBUG("publish %f, at %f", feature_points->header.stamp.toSec(), ros::Time::now().toSec());
         // skip the first image; since no optical speed on frist image
-        if (!init_pub)
+        if (!init_pub)//第一帧不发布
         {
+            // 如果是第一帧，那么还没有速度，不发布特征点数据
             init_pub = 1;
         }
         else
-            pub_img.publish(feature_points);
+            pub_img.publish(feature_points);    //不是第一帧，发布跟踪的特帧点数据(点云：归一化平面点坐标，channels:<id,特征点在新的帧的像素坐标，归一化平面点速度>)
 
+        // 是否显示跟踪的图像点
         if (SHOW_TRACK)
         {
+            // 取当前帧图像，转换成Opencv数据类型
             ptr = cv_bridge::cvtColor(ptr, sensor_msgs::image_encodings::BGR8);
             //cv::Mat stereo_img(ROW * NUM_OF_CAM, COL, CV_8UC3);
             cv::Mat stereo_img = ptr->image;
@@ -174,7 +220,8 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             {
                 cv::Mat tmp_img = stereo_img.rowRange(i * ROW, (i + 1) * ROW);
                 cv::cvtColor(show_img, tmp_img, CV_GRAY2RGB);
-
+                //显示追踪状态，越红越好，越蓝越不行
+                // 绘制当前跟踪的特帧点到图像上
                 for (unsigned int j = 0; j < trackerData[i].cur_pts.size(); j++)
                 {
                     double len = std::min(1.0, 1.0 * trackerData[i].track_cnt[j] / WINDOW_SIZE);
@@ -197,6 +244,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             }
             //cv::imshow("vis", stereo_img);
             //cv::waitKey(5);
+            // 发布
             pub_match.publish(ptr->toImageMsg());
         }
     }
@@ -205,11 +253,17 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 
 int main(int argc, char **argv)
 {
+    // 初始化前端跟踪节点
     ros::init(argc, argv, "feature_tracker");
     ros::NodeHandle n("~");
+
+    //设置logger的级别。 只有级别大于或等于level的日志记录消息才会得到处理。
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+
+    //读取yaml中的一些配置参数
     readParameters(n);
 
+    //读取每个相机实例对应的相机内参
     for (int i = 0; i < NUM_OF_CAM; i++)
         trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);
 
@@ -228,10 +282,14 @@ int main(int argc, char **argv)
         }
     }
 
+    //订阅话题IMAGE_TOPIC(/cam0/image_raw),执行回调函数img_callback
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
 
+    //发布feature，实例feature_points，跟踪的特征点，给后端优化用
     pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);
+    //发布feature_img，实例ptr，跟踪的特征点图，给RVIZ用和调试用
     pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000);
+    //发布restart
     pub_restart = n.advertise<std_msgs::Bool>("restart",1000);
     /*
     if (SHOW_TRACK)
